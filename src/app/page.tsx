@@ -18,28 +18,28 @@ interface VideoFile {
   error?: string;
 }
 
-const CREATOR_CODES = [
-  { code: "0", label: "0 - Chris Carter [FORGED] or Chris Hedgecock [RM]" },
-  { code: "6", label: "6 - LAZ" },
-  { code: "9", label: "9 - Lindsay or Alex" },
-  { code: "5", label: "5 - Outside social media creator" },
+const CREATOR_OPTIONS = [
+  { code: "0", initials: "CH", label: "Chris Hedgecock" },
+  { code: "0", initials: "CC", label: "Chris Carter" },
+  { code: "6", initials: "LAZ", label: "LAZ" },
+  { code: "9", initials: "LN", label: "Lindsay" },
+  { code: "9", initials: "AX", label: "Alex" },
+  { code: "5", initials: "", label: "Outside Creator (custom initials)" },
 ];
 
-// Extract folder ID from various Google Drive URL formats
+const MULTIPLIER_OPTIONS = [
+  { value: "5", label: "5X Entries" },
+  { value: "4", label: "4X Entries" },
+  { value: "3", label: "3X Entries" },
+  { value: "2", label: "2X Entries" },
+  { value: "1", label: "1X / Evergreen" },
+  { value: "0", label: "End of Sweeps" },
+];
+
 function extractFolderId(url: string): string | null {
-  // Format: https://drive.google.com/drive/folders/FOLDER_ID
   const folderMatch = url.match(/\/folders\/([a-zA-Z0-9_-]+)/);
   if (folderMatch) return folderMatch[1];
-  
-  // Format: https://drive.google.com/drive/u/0/folders/FOLDER_ID
-  const folderMatch2 = url.match(/\/folders\/([a-zA-Z0-9_-]+)/);
-  if (folderMatch2) return folderMatch2[1];
-  
-  // If it's just the ID itself (no URL)
-  if (/^[a-zA-Z0-9_-]+$/.test(url.trim())) {
-    return url.trim();
-  }
-  
+  if (/^[a-zA-Z0-9_-]+$/.test(url.trim())) return url.trim();
   return null;
 }
 
@@ -47,11 +47,21 @@ export default function Home() {
   const { data: session, status } = useSession();
   const [folderUrl, setFolderUrl] = useState("");
   const [folderId, setFolderId] = useState<string | null>(null);
-  const [creatorCode, setCreatorCode] = useState("0");
+  const [creatorSelection, setCreatorSelection] = useState(CREATOR_OPTIONS[0]);
+  const [customInitials, setCustomInitials] = useState("");
+  const [startingSequence, setStartingSequence] = useState(1);
+  const [defaultMultiplier, setDefaultMultiplier] = useState("1");
   const [videos, setVideos] = useState<VideoFile[]>([]);
   const [processing, setProcessing] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [urlError, setUrlError] = useState("");
+
+  const getInitials = () => {
+    if (creatorSelection.code === "5" && customInitials) {
+      return customInitials.toUpperCase();
+    }
+    return creatorSelection.initials;
+  };
 
   const handleFolderUrlChange = (url: string) => {
     setFolderUrl(url);
@@ -66,78 +76,83 @@ export default function Home() {
     setVideos([]);
   };
 
+  const handleCreatorChange = (index: number) => {
+    setCreatorSelection(CREATOR_OPTIONS[index]);
+    if (CREATOR_OPTIONS[index].code !== "5") {
+      setCustomInitials("");
+    }
+  };
+
+  const generateFileName = (
+    index: number,
+    multiplier: string,
+    isTTSSafe: boolean,
+    description: string,
+    duration: number
+  ) => {
+    const sequence = (startingSequence + index).toString().padStart(4, "0");
+    const initials = getInitials();
+    const ttsLabel = isTTSSafe ? "TTS" : "NTTS";
+    const desc = description || "Ad";
+    const dur = duration || 0;
+    
+    // Format: [MULTIPLIER][CREATOR_CODE][SEQUENCE].[TTS].[INITIALS].[DESCRIPTION].[LENGTH]sec.mp4
+    return `${multiplier}${creatorSelection.code}${sequence}.${ttsLabel}.${initials}.${desc}.${dur}sec.mp4`;
+  };
+
   const processVideos = async () => {
     if (!folderId) return;
+    if (!getInitials()) {
+      alert("Please enter creator initials");
+      return;
+    }
     setProcessing(true);
 
     try {
-      // First, fetch video files from the folder
       const res = await fetch(`/api/drive/videos?folderId=${folderId}`);
       const data = await res.json();
 
       if (data.videos) {
-        // Initialize videos with processing state
-        const initialVideos: VideoFile[] = data.videos.map((v: { id: string; name: string; mimeType: string }) => ({
+        // Create initial video list with default names
+        const initialVideos: VideoFile[] = data.videos.map((v: { id: string; name: string; mimeType: string }, idx: number) => ({
           id: v.id,
           name: v.name,
           mimeType: v.mimeType,
-          suggestedName: "",
+          suggestedName: generateFileName(idx, defaultMultiplier, true, "Ad", 0),
           duration: 0,
           transcript: "",
-          multiplier: "1000",
+          multiplier: defaultMultiplier,
           isTTSSafe: true,
-          description: "",
+          description: "Ad",
           isEditing: false,
-          processing: true,
+          processing: false,
         }));
         setVideos(initialVideos);
-
-        // Process each video
-        for (let i = 0; i < initialVideos.length; i++) {
-          try {
-            const processRes = await fetch("/api/process-video", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                fileId: initialVideos[i].id,
-                fileName: initialVideos[i].name,
-                creatorCode,
-                folderId: folderId,
-                sequenceStart: i + 1,
-              }),
-            });
-            const processData = await processRes.json();
-
-            setVideos((prev) =>
-              prev.map((v, idx) =>
-                idx === i
-                  ? {
-                      ...v,
-                      ...processData,
-                      processing: false,
-                    }
-                  : v
-              )
-            );
-          } catch {
-            setVideos((prev) =>
-              prev.map((v, idx) =>
-                idx === i
-                  ? {
-                      ...v,
-                      processing: false,
-                      error: "Failed to process",
-                    }
-                  : v
-              )
-            );
-          }
-        }
       }
     } catch (error) {
-      console.error("Error processing videos:", error);
+      console.error("Error fetching videos:", error);
     }
     setProcessing(false);
+  };
+
+  const updateVideo = (index: number, updates: Partial<VideoFile>) => {
+    setVideos((prev) =>
+      prev.map((v, i) => {
+        if (i !== index) return v;
+        const updated = { ...v, ...updates };
+        // Regenerate filename if relevant fields changed
+        if ('multiplier' in updates || 'isTTSSafe' in updates || 'description' in updates || 'duration' in updates) {
+          updated.suggestedName = generateFileName(
+            i,
+            updated.multiplier,
+            updated.isTTSSafe,
+            updated.description,
+            updated.duration
+          );
+        }
+        return updated;
+      })
+    );
   };
 
   const updateSuggestedName = (index: number, newName: string) => {
@@ -171,7 +186,6 @@ export default function Home() {
       const data = await res.json();
       if (data.success) {
         alert(`Successfully renamed ${data.renamed} files!`);
-        // Update the original names
         setVideos((prev) =>
           prev.map((v) => ({
             ...v,
@@ -188,9 +202,19 @@ export default function Home() {
     setRenaming(false);
   };
 
+  // Regenerate all filenames when settings change
+  const regenerateAllNames = () => {
+    setVideos((prev) =>
+      prev.map((v, idx) => ({
+        ...v,
+        suggestedName: generateFileName(idx, v.multiplier, v.isTTSSafe, v.description, v.duration),
+      }))
+    );
+  };
+
   if (status === "loading") {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center bg-gray-900">
         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
       </div>
     );
@@ -198,31 +222,13 @@ export default function Home() {
 
   if (!session) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-6">
-        <h1 className="text-4xl font-bold">Ad Naming Tool</h1>
-        <p className="text-gray-400">RestoMods Video Renaming System</p>
+      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-900 text-white">
+        <h1 className="text-3xl font-bold mb-8">Ad Naming Tool</h1>
+        <p className="mb-4 text-gray-400">Connect your Google Drive to get started</p>
         <button
           onClick={() => signIn("google")}
-          className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg flex items-center gap-2"
+          className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition"
         >
-          <svg className="w-5 h-5" viewBox="0 0 24 24">
-            <path
-              fill="currentColor"
-              d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-            />
-            <path
-              fill="currentColor"
-              d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-            />
-            <path
-              fill="currentColor"
-              d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-            />
-            <path
-              fill="currentColor"
-              d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-            />
-          </svg>
           Sign in with Google
         </button>
       </div>
@@ -230,184 +236,202 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen p-8">
+    <main className="min-h-screen bg-gray-900 text-white p-8">
       <div className="max-w-6xl mx-auto">
-        {/* Header */}
         <div className="flex justify-between items-center mb-8">
-          <div>
-            <h1 className="text-3xl font-bold">Ad Naming Tool</h1>
-            <p className="text-gray-400">RestoMods Video Renaming System</p>
-          </div>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-400">{session.user?.email}</span>
-            <button
-              onClick={() => signOut()}
-              className="text-sm text-red-400 hover:text-red-300"
-            >
-              Sign Out
-            </button>
-          </div>
+          <h1 className="text-2xl font-bold">Ad Naming Tool</h1>
+          <button
+            onClick={() => signOut()}
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded transition"
+          >
+            Sign Out
+          </button>
         </div>
 
-        {/* Controls */}
+        {/* Settings Panel */}
         <div className="bg-gray-800 rounded-lg p-6 mb-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Folder URL Input */}
-            <div>
-              <label className="block text-sm font-medium mb-2">
-                Google Drive Folder URL
-              </label>
+          <h2 className="text-lg font-semibold mb-4">Settings</h2>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Folder URL */}
+            <div className="lg:col-span-2">
+              <label className="block text-sm text-gray-400 mb-1">Google Drive Folder URL</label>
               <input
                 type="text"
                 value={folderUrl}
                 onChange={(e) => handleFolderUrlChange(e.target.value)}
-                placeholder="Paste Google Drive folder link..."
-                className="w-full bg-gray-700 px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Paste Google Drive folder URL..."
+                className="w-full px-4 py-2 bg-gray-700 rounded border border-gray-600 focus:border-blue-500 focus:outline-none"
               />
-              {urlError && (
-                <p className="text-red-400 text-sm mt-1">{urlError}</p>
-              )}
-              {folderId && !urlError && (
-                <p className="text-green-400 text-sm mt-1">✓ Folder ID: {folderId.slice(0, 20)}...</p>
-              )}
+              {urlError && <p className="text-red-400 text-sm mt-1">{urlError}</p>}
             </div>
 
-            {/* Creator Code */}
+            {/* Starting Sequence */}
             <div>
-              <label className="block text-sm font-medium mb-2">Creator</label>
+              <label className="block text-sm text-gray-400 mb-1">Starting Sequence #</label>
+              <input
+                type="number"
+                min="1"
+                value={startingSequence}
+                onChange={(e) => setStartingSequence(parseInt(e.target.value) || 1)}
+                className="w-full px-4 py-2 bg-gray-700 rounded border border-gray-600 focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+
+            {/* Default Multiplier */}
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">Default Multiplier</label>
               <select
-                value={creatorCode}
-                onChange={(e) => setCreatorCode(e.target.value)}
-                className="w-full bg-gray-700 px-4 py-2 rounded-lg"
+                value={defaultMultiplier}
+                onChange={(e) => setDefaultMultiplier(e.target.value)}
+                className="w-full px-4 py-2 bg-gray-700 rounded border border-gray-600 focus:border-blue-500 focus:outline-none"
               >
-                {CREATOR_CODES.map((c) => (
-                  <option key={c.code} value={c.code}>
-                    {c.label}
+                {MULTIPLIER_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Creator Selection */}
+            <div className="lg:col-span-2">
+              <label className="block text-sm text-gray-400 mb-1">Creator</label>
+              <select
+                value={CREATOR_OPTIONS.findIndex(c => c === creatorSelection)}
+                onChange={(e) => handleCreatorChange(parseInt(e.target.value))}
+                className="w-full px-4 py-2 bg-gray-700 rounded border border-gray-600 focus:border-blue-500 focus:outline-none"
+              >
+                {CREATOR_OPTIONS.map((opt, idx) => (
+                  <option key={idx} value={idx}>
+                    [{opt.code}] {opt.label} {opt.initials && `(${opt.initials})`}
                   </option>
                 ))}
               </select>
             </div>
 
-            {/* Process Button */}
-            <div className="flex items-end">
+            {/* Custom Initials (for outside creators) */}
+            {creatorSelection.code === "5" && (
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Custom Initials</label>
+                <input
+                  type="text"
+                  value={customInitials}
+                  onChange={(e) => setCustomInitials(e.target.value.toUpperCase().slice(0, 3))}
+                  placeholder="e.g. JD"
+                  maxLength={3}
+                  className="w-full px-4 py-2 bg-gray-700 rounded border border-gray-600 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="mt-4 flex gap-4">
+            <button
+              onClick={processVideos}
+              disabled={!folderId || processing}
+              className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded font-medium transition"
+            >
+              {processing ? "Loading..." : "Load Videos"}
+            </button>
+            {videos.length > 0 && (
               <button
-                onClick={processVideos}
-                disabled={!folderId || processing || !!urlError}
-                className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed py-2 px-4 rounded-lg font-semibold"
+                onClick={regenerateAllNames}
+                className="px-6 py-2 bg-gray-600 hover:bg-gray-500 rounded font-medium transition"
               >
-                {processing ? "Processing..." : "Process Videos"}
+                Regenerate Names
               </button>
-            </div>
+            )}
           </div>
         </div>
 
-        {/* Results Table */}
+        {/* Preview Text */}
+        {folderId && (
+          <div className="mb-4 text-sm text-gray-400">
+            <span className="font-medium">Preview format:</span>{" "}
+            <code className="bg-gray-800 px-2 py-1 rounded">
+              {generateFileName(0, defaultMultiplier, true, "Description", 15)}
+            </code>
+          </div>
+        )}
+
+        {/* Video List */}
         {videos.length > 0 && (
           <div className="bg-gray-800 rounded-lg overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-700">
-                  <tr>
-                    <th className="px-4 py-3 text-left">Original Name</th>
-                    <th className="px-4 py-3 text-left">Suggested Name</th>
-                    <th className="px-4 py-3 text-left w-24">Duration</th>
-                    <th className="px-4 py-3 text-left w-20">TTS</th>
-                    <th className="px-4 py-3 text-center w-24">Actions</th>
+            <table className="w-full">
+              <thead className="bg-gray-700">
+                <tr>
+                  <th className="px-4 py-3 text-left text-sm font-medium">Original Name</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium">Suggested Name</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium w-24">Duration</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium w-20">TTS</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium w-24">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-700">
+                {videos.map((video, idx) => (
+                  <tr key={video.id} className="hover:bg-gray-750">
+                    <td className="px-4 py-3 text-sm">{video.name}</td>
+                    <td className="px-4 py-3 text-sm">
+                      {video.isEditing ? (
+                        <input
+                          type="text"
+                          value={video.suggestedName}
+                          onChange={(e) => updateSuggestedName(idx, e.target.value)}
+                          onBlur={() => toggleEdit(idx)}
+                          onKeyDown={(e) => e.key === "Enter" && toggleEdit(idx)}
+                          autoFocus
+                          className="w-full px-2 py-1 bg-gray-700 rounded border border-blue-500 focus:outline-none"
+                        />
+                      ) : (
+                        <span className="text-green-400">{video.suggestedName}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-sm">
+                      <input
+                        type="number"
+                        min="0"
+                        value={video.duration}
+                        onChange={(e) => updateVideo(idx, { duration: parseInt(e.target.value) || 0 })}
+                        className="w-16 px-2 py-1 bg-gray-700 rounded border border-gray-600 focus:border-blue-500 focus:outline-none text-center"
+                      />
+                      <span className="text-gray-500 ml-1">sec</span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => updateVideo(idx, { isTTSSafe: !video.isTTSSafe })}
+                        className={`px-2 py-1 rounded text-xs font-medium ${
+                          video.isTTSSafe
+                            ? "bg-green-600 text-white"
+                            : "bg-red-600 text-white"
+                        }`}
+                      >
+                        {video.isTTSSafe ? "TTS" : "NTTS"}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => toggleEdit(idx)}
+                        className="text-blue-400 hover:text-blue-300 text-sm"
+                      >
+                        Edit
+                      </button>
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-700">
-                  {videos.map((video, index) => (
-                    <tr key={video.id} className="hover:bg-gray-750">
-                      <td className="px-4 py-3 text-sm">{video.name}</td>
-                      <td className="px-4 py-3">
-                        {video.processing ? (
-                          <div className="flex items-center gap-2">
-                            <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-blue-500"></div>
-                            <span className="text-gray-400">Processing...</span>
-                          </div>
-                        ) : video.error ? (
-                          <span className="text-red-400">{video.error}</span>
-                        ) : video.isEditing ? (
-                          <input
-                            type="text"
-                            value={video.suggestedName}
-                            onChange={(e) =>
-                              updateSuggestedName(index, e.target.value)
-                            }
-                            className="w-full bg-gray-700 px-2 py-1 rounded text-sm"
-                          />
-                        ) : (
-                          <span className="text-sm font-mono">
-                            {video.suggestedName}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-sm">
-                        {video.duration ? `${video.duration}s` : "-"}
-                      </td>
-                      <td className="px-4 py-3">
-                        {video.isTTSSafe ? (
-                          <span className="text-green-400">✓</span>
-                        ) : (
-                          <span className="text-red-400">✕</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        {!video.processing && !video.error && (
-                          <button
-                            onClick={() => toggleEdit(index)}
-                            className="text-blue-400 hover:text-blue-300 text-sm"
-                          >
-                            {video.isEditing ? "Done" : "Edit"}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </tbody>
+            </table>
 
-            {/* Rename All Button */}
-            <div className="p-4 bg-gray-750 border-t border-gray-700">
+            <div className="p-4 bg-gray-700 flex justify-between items-center">
+              <span className="text-sm text-gray-400">{videos.length} videos ready</span>
               <button
                 onClick={renameAll}
-                disabled={renaming || videos.every((v) => v.processing || v.error)}
-                className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed py-3 rounded-lg font-semibold"
+                disabled={renaming}
+                className="px-6 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded font-medium transition"
               >
                 {renaming ? "Renaming..." : "Rename All Files"}
               </button>
             </div>
           </div>
         )}
-
-        {/* Instructions */}
-        <div className="mt-8 bg-gray-800 rounded-lg p-6">
-          <h2 className="text-xl font-bold mb-4">Naming Convention</h2>
-          <p className="text-gray-300 mb-4 font-mono text-sm">
-            [MULTIPLIER][SEQUENCE].[TTS].[CREATOR].[DESCRIPTION].[LENGTH]sec.mp4
-          </p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-            <div>
-              <h3 className="font-semibold mb-2">Multiplier Codes:</h3>
-              <ul className="text-gray-400 space-y-1">
-                <li>5000 = 5X Entries</li>
-                <li>4000 = 4X Entries</li>
-                <li>3000 = 3X Entries</li>
-                <li>2000 = 2X Entries</li>
-                <li>1000 = 1X or No Mention (evergreen)</li>
-                <li>0001 = END OF SWEEPS/LASTCHANCE</li>
-              </ul>
-            </div>
-            <div>
-              <h3 className="font-semibold mb-2">TTS Safe:</h3>
-              <p className="text-gray-400">
-                &quot;TTS&quot; is added if the ad is TikTok safe (no payment mentions
-                like &quot;$12.95&quot;, &quot;every dollar equals entries&quot;)
-              </p>
-            </div>
-          </div>
-        </div>
       </div>
     </main>
   );
