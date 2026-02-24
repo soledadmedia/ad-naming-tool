@@ -54,6 +54,7 @@ export default function Home() {
   const [videos, setVideos] = useState<VideoFile[]>([]);
   const [processing, setProcessing] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [urlError, setUrlError] = useState("");
 
   const getInitials = () => {
@@ -113,13 +114,13 @@ export default function Home() {
       const data = await res.json();
 
       if (data.videos) {
-        // Create initial video list with default names
-        const initialVideos: VideoFile[] = data.videos.map((v: { id: string; name: string; mimeType: string }, idx: number) => ({
+        // Create initial video list with duration from Drive metadata
+        const initialVideos: VideoFile[] = data.videos.map((v: { id: string; name: string; mimeType: string; duration: number }, idx: number) => ({
           id: v.id,
           name: v.name,
           mimeType: v.mimeType,
-          suggestedName: generateFileName(idx, defaultMultiplier, true, "Ad", 0),
-          duration: 0,
+          suggestedName: generateFileName(idx, defaultMultiplier, true, "Ad", v.duration || 0),
+          duration: v.duration || 0,
           transcript: "",
           multiplier: defaultMultiplier,
           isTTSSafe: true,
@@ -210,6 +211,51 @@ export default function Home() {
         suggestedName: generateFileName(idx, v.multiplier, v.isTTSSafe, v.description, v.duration),
       }))
     );
+  };
+
+  // Transcribe all videos to detect TTS safety and extract descriptions
+  const transcribeAll = async () => {
+    setTranscribing(true);
+    
+    for (let i = 0; i < videos.length; i++) {
+      const video = videos[i];
+      
+      // Mark as processing
+      setVideos(prev => prev.map((v, idx) => 
+        idx === i ? { ...v, processing: true } : v
+      ));
+
+      try {
+        const res = await fetch("/api/transcribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileId: video.id, fileName: video.name }),
+        });
+        
+        const data = await res.json();
+        
+        setVideos(prev => prev.map((v, idx) => {
+          if (idx !== i) return v;
+          const updated = {
+            ...v,
+            processing: false,
+            transcript: data.transcript || "",
+            isTTSSafe: data.isTTSSafe ?? true,
+            description: data.description || "Ad",
+          };
+          updated.suggestedName = generateFileName(
+            idx, updated.multiplier, updated.isTTSSafe, updated.description, updated.duration
+          );
+          return updated;
+        }));
+      } catch {
+        setVideos(prev => prev.map((v, idx) =>
+          idx === i ? { ...v, processing: false, error: "Transcription failed" } : v
+        ));
+      }
+    }
+    
+    setTranscribing(false);
   };
 
   if (status === "loading") {
@@ -333,12 +379,21 @@ export default function Home() {
               {processing ? "Loading..." : "Load Videos"}
             </button>
             {videos.length > 0 && (
-              <button
-                onClick={regenerateAllNames}
-                className="px-6 py-2 bg-gray-600 hover:bg-gray-500 rounded font-medium transition"
-              >
-                Regenerate Names
-              </button>
+              <>
+                <button
+                  onClick={transcribeAll}
+                  disabled={transcribing}
+                  className="px-6 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 rounded font-medium transition"
+                >
+                  {transcribing ? "Transcribing..." : "🎤 Transcribe All (TTS Detection)"}
+                </button>
+                <button
+                  onClick={regenerateAllNames}
+                  className="px-6 py-2 bg-gray-600 hover:bg-gray-500 rounded font-medium transition"
+                >
+                  Regenerate Names
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -361,15 +416,19 @@ export default function Home() {
                 <tr>
                   <th className="px-4 py-3 text-left text-sm font-medium">Original Name</th>
                   <th className="px-4 py-3 text-left text-sm font-medium">Suggested Name</th>
-                  <th className="px-4 py-3 text-left text-sm font-medium w-24">Duration</th>
-                  <th className="px-4 py-3 text-left text-sm font-medium w-20">TTS</th>
-                  <th className="px-4 py-3 text-left text-sm font-medium w-24">Actions</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium w-32">Description</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium w-20">Dur</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium w-16">TTS</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium w-20">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-700">
                 {videos.map((video, idx) => (
-                  <tr key={video.id} className="hover:bg-gray-750">
-                    <td className="px-4 py-3 text-sm">{video.name}</td>
+                  <tr key={video.id} className={`hover:bg-gray-750 ${video.processing ? "opacity-50" : ""}`}>
+                    <td className="px-4 py-3 text-sm">
+                      {video.processing && <span className="animate-pulse mr-2">⏳</span>}
+                      {video.name}
+                    </td>
                     <td className="px-4 py-3 text-sm">
                       {video.isEditing ? (
                         <input
@@ -387,13 +446,21 @@ export default function Home() {
                     </td>
                     <td className="px-4 py-3 text-sm">
                       <input
+                        type="text"
+                        value={video.description}
+                        onChange={(e) => updateVideo(idx, { description: e.target.value.replace(/[^a-zA-Z0-9]/g, "") })}
+                        className="w-28 px-2 py-1 bg-gray-700 rounded border border-gray-600 focus:border-blue-500 focus:outline-none text-xs"
+                        placeholder="Description"
+                      />
+                    </td>
+                    <td className="px-4 py-3 text-sm">
+                      <input
                         type="number"
                         min="0"
                         value={video.duration}
                         onChange={(e) => updateVideo(idx, { duration: parseInt(e.target.value) || 0 })}
-                        className="w-16 px-2 py-1 bg-gray-700 rounded border border-gray-600 focus:border-blue-500 focus:outline-none text-center"
+                        className="w-14 px-2 py-1 bg-gray-700 rounded border border-gray-600 focus:border-blue-500 focus:outline-none text-center text-xs"
                       />
-                      <span className="text-gray-500 ml-1">sec</span>
                     </td>
                     <td className="px-4 py-3">
                       <button
@@ -404,7 +471,7 @@ export default function Home() {
                             : "bg-red-600 text-white"
                         }`}
                       >
-                        {video.isTTSSafe ? "TTS" : "NTTS"}
+                        {video.isTTSSafe ? "✓" : "✗"}
                       </button>
                     </td>
                     <td className="px-4 py-3">

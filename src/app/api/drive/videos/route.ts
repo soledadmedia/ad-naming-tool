@@ -36,12 +36,22 @@ export async function GET(request: NextRequest) {
 
     const response = await drive.files.list({
       q: `'${folderId}' in parents and mimeType contains 'video/' and trashed = false`,
-      fields: "files(id, name, mimeType)",
+      fields: "files(id, name, mimeType, videoMediaMetadata)",
       orderBy: "name",
       pageSize: 100,
     });
 
-    return NextResponse.json({ videos: response.data.files || [] });
+    // Extract duration from videoMediaMetadata
+    const videos = (response.data.files || []).map(file => ({
+      id: file.id,
+      name: file.name,
+      mimeType: file.mimeType,
+      duration: file.videoMediaMetadata?.durationMillis 
+        ? Math.round(parseInt(file.videoMediaMetadata.durationMillis) / 1000)
+        : 0,
+    }));
+
+    return NextResponse.json({ videos });
   } catch (error) {
     console.error("Error fetching videos:", error);
     return NextResponse.json(
