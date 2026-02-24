@@ -57,11 +57,12 @@ export async function POST(request: NextRequest) {
   const session = await getServerSession();
 
   if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: "Unauthorized - no session" }, { status: 401 });
   }
 
   try {
     const { fileId, fileName } = await request.json();
+    console.log(`[Transcribe] Starting for ${fileName} (${fileId})`);
 
     // Get access token
     const tokenRes = await fetch(`${process.env.NEXTAUTH_URL}/api/auth/session`, {
@@ -71,14 +72,17 @@ export async function POST(request: NextRequest) {
     const accessToken = sessionData?.accessToken;
 
     if (!accessToken) {
-      return NextResponse.json({ error: "No access token" }, { status: 401 });
+      console.log("[Transcribe] No access token in session");
+      return NextResponse.json({ error: "No access token - please sign out and sign in again" }, { status: 401 });
     }
 
+    console.log("[Transcribe] Got access token, connecting to Drive...");
     const oauth2Client = new google.auth.OAuth2();
     oauth2Client.setCredentials({ access_token: accessToken });
     const drive = google.drive({ version: "v3", auth: oauth2Client });
 
     // Download video to memory
+    console.log("[Transcribe] Downloading video...");
     const response = await drive.files.get(
       { fileId, alt: "media" },
       { responseType: "stream" }
@@ -93,6 +97,7 @@ export async function POST(request: NextRequest) {
     });
 
     const videoBuffer = Buffer.concat(chunks);
+    console.log(`[Transcribe] Downloaded ${(videoBuffer.length / 1024 / 1024).toFixed(2)}MB`);
 
     // Check file size (Whisper limit is 25MB)
     if (videoBuffer.length > 25 * 1024 * 1024) {
@@ -104,6 +109,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Send to Whisper (it accepts video files, extracts audio internally)
+    console.log("[Transcribe] Sending to Whisper...");
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     
     const file = new File([videoBuffer], fileName || "video.mp4", { 
@@ -116,9 +122,13 @@ export async function POST(request: NextRequest) {
     });
 
     const transcript = transcription.text;
+    console.log(`[Transcribe] Got transcript: "${transcript.slice(0, 100)}..."`);
+    
     const ttsSafe = isTTSSafe(transcript);
     const description = extractDescription(transcript);
 
+    console.log(`[Transcribe] Done! TTS Safe: ${ttsSafe}, Description: ${description}`);
+    
     return NextResponse.json({
       transcript,
       isTTSSafe: ttsSafe,
