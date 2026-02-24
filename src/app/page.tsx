@@ -1,7 +1,7 @@
 "use client";
 
 import { useSession, signIn, signOut } from "next-auth/react";
-import { useState, useCallback } from "react";
+import { useState } from "react";
 
 interface VideoFile {
   id: string;
@@ -18,11 +18,6 @@ interface VideoFile {
   error?: string;
 }
 
-interface Folder {
-  id: string;
-  name: string;
-}
-
 const CREATOR_CODES = [
   { code: "0", label: "0 - Chris Carter [FORGED] or Chris Hedgecock [RM]" },
   { code: "6", label: "6 - LAZ" },
@@ -30,64 +25,54 @@ const CREATOR_CODES = [
   { code: "5", label: "5 - Outside social media creator" },
 ];
 
+// Extract folder ID from various Google Drive URL formats
+function extractFolderId(url: string): string | null {
+  // Format: https://drive.google.com/drive/folders/FOLDER_ID
+  const folderMatch = url.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (folderMatch) return folderMatch[1];
+  
+  // Format: https://drive.google.com/drive/u/0/folders/FOLDER_ID
+  const folderMatch2 = url.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (folderMatch2) return folderMatch2[1];
+  
+  // If it's just the ID itself (no URL)
+  if (/^[a-zA-Z0-9_-]+$/.test(url.trim())) {
+    return url.trim();
+  }
+  
+  return null;
+}
+
 export default function Home() {
   const { data: session, status } = useSession();
-  const [folders, setFolders] = useState<Folder[]>([]);
-  const [currentPath, setCurrentPath] = useState<{ id: string; name: string }[]>([
-    { id: "root", name: "My Drive" },
-  ]);
-  const [selectedFolder, setSelectedFolder] = useState<Folder | null>(null);
+  const [folderUrl, setFolderUrl] = useState("");
+  const [folderId, setFolderId] = useState<string | null>(null);
   const [creatorCode, setCreatorCode] = useState("0");
   const [videos, setVideos] = useState<VideoFile[]>([]);
-  const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [renaming, setRenaming] = useState(false);
-  const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [urlError, setUrlError] = useState("");
 
-  const fetchFolders = useCallback(async (parentId: string = "root") => {
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/drive/folders?parentId=${parentId}`);
-      const data = await res.json();
-      if (data.folders) {
-        setFolders(data.folders);
-      }
-    } catch (error) {
-      console.error("Error fetching folders:", error);
+  const handleFolderUrlChange = (url: string) => {
+    setFolderUrl(url);
+    setUrlError("");
+    const id = extractFolderId(url);
+    if (url && !id) {
+      setUrlError("Invalid Google Drive folder URL");
+      setFolderId(null);
+    } else {
+      setFolderId(id);
     }
-    setLoading(false);
-  }, []);
-
-  const navigateToFolder = (folder: Folder) => {
-    setCurrentPath([...currentPath, { id: folder.id, name: folder.name }]);
-    fetchFolders(folder.id);
-  };
-
-  const navigateBack = (index: number) => {
-    const newPath = currentPath.slice(0, index + 1);
-    setCurrentPath(newPath);
-    fetchFolders(newPath[newPath.length - 1].id);
-  };
-
-  const selectFolder = (folder: Folder) => {
-    setSelectedFolder(folder);
-    setShowFolderPicker(false);
     setVideos([]);
   };
 
-  const openFolderPicker = () => {
-    setShowFolderPicker(true);
-    fetchFolders("root");
-    setCurrentPath([{ id: "root", name: "My Drive" }]);
-  };
-
   const processVideos = async () => {
-    if (!selectedFolder) return;
+    if (!folderId) return;
     setProcessing(true);
 
     try {
       // First, fetch video files from the folder
-      const res = await fetch(`/api/drive/videos?folderId=${selectedFolder.id}`);
+      const res = await fetch(`/api/drive/videos?folderId=${folderId}`);
       const data = await res.json();
 
       if (data.videos) {
@@ -117,7 +102,7 @@ export default function Home() {
                 fileId: initialVideos[i].id,
                 fileName: initialVideos[i].name,
                 creatorCode,
-                folderId: selectedFolder.id,
+                folderId: folderId,
                 sequenceStart: i + 1,
               }),
             });
@@ -267,17 +252,24 @@ export default function Home() {
         {/* Controls */}
         <div className="bg-gray-800 rounded-lg p-6 mb-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Folder Picker */}
+            {/* Folder URL Input */}
             <div>
               <label className="block text-sm font-medium mb-2">
-                Google Drive Folder
+                Google Drive Folder URL
               </label>
-              <button
-                onClick={openFolderPicker}
-                className="w-full bg-gray-700 hover:bg-gray-600 text-left px-4 py-2 rounded-lg"
-              >
-                {selectedFolder ? selectedFolder.name : "Select Folder..."}
-              </button>
+              <input
+                type="text"
+                value={folderUrl}
+                onChange={(e) => handleFolderUrlChange(e.target.value)}
+                placeholder="Paste Google Drive folder link..."
+                className="w-full bg-gray-700 px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {urlError && (
+                <p className="text-red-400 text-sm mt-1">{urlError}</p>
+              )}
+              {folderId && !urlError && (
+                <p className="text-green-400 text-sm mt-1">✓ Folder ID: {folderId.slice(0, 20)}...</p>
+              )}
             </div>
 
             {/* Creator Code */}
@@ -300,7 +292,7 @@ export default function Home() {
             <div className="flex items-end">
               <button
                 onClick={processVideos}
-                disabled={!selectedFolder || processing}
+                disabled={!folderId || processing || !!urlError}
                 className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed py-2 px-4 rounded-lg font-semibold"
               >
                 {processing ? "Processing..." : "Process Videos"}
@@ -308,74 +300,6 @@ export default function Home() {
             </div>
           </div>
         </div>
-
-        {/* Folder Picker Modal */}
-        {showFolderPicker && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-gray-800 rounded-lg p-6 w-full max-w-lg max-h-[70vh] overflow-hidden flex flex-col">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-bold">Select Folder</h2>
-                <button
-                  onClick={() => setShowFolderPicker(false)}
-                  className="text-gray-400 hover:text-white"
-                >
-                  ✕
-                </button>
-              </div>
-
-              {/* Breadcrumb */}
-              <div className="flex items-center gap-2 mb-4 text-sm overflow-x-auto">
-                {currentPath.map((p, i) => (
-                  <span key={p.id} className="flex items-center gap-2">
-                    {i > 0 && <span className="text-gray-500">/</span>}
-                    <button
-                      onClick={() => navigateBack(i)}
-                      className="text-blue-400 hover:text-blue-300"
-                    >
-                      {p.name}
-                    </button>
-                  </span>
-                ))}
-              </div>
-
-              {/* Folder List */}
-              <div className="flex-1 overflow-y-auto">
-                {loading ? (
-                  <div className="flex justify-center py-8">
-                    <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500"></div>
-                  </div>
-                ) : folders.length === 0 ? (
-                  <p className="text-gray-400 text-center py-8">
-                    No folders found
-                  </p>
-                ) : (
-                  <div className="space-y-1">
-                    {folders.map((folder) => (
-                      <div
-                        key={folder.id}
-                        className="flex items-center justify-between p-2 hover:bg-gray-700 rounded"
-                      >
-                        <button
-                          onClick={() => navigateToFolder(folder)}
-                          className="flex items-center gap-2 flex-1 text-left"
-                        >
-                          <span>📁</span>
-                          <span>{folder.name}</span>
-                        </button>
-                        <button
-                          onClick={() => selectFolder(folder)}
-                          className="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-sm"
-                        >
-                          Select
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Results Table */}
         {videos.length > 0 && (
