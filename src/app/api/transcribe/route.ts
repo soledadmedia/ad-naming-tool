@@ -127,9 +127,21 @@ export async function POST(request: NextRequest) {
 
   } catch (error) {
     console.error("Transcription error:", error);
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json(
-      { error: "Transcription failed", isTTSSafe: true, description: "Ad" },
+      { error: `Transcription failed: ${errorMessage}`, isTTSSafe: true, description: "Ad", debug: errorMessage },
       { status: 500 }
     );
   }
+}
+
+// Health check endpoint
+export async function GET() {
+  const hasOpenAI = !!process.env.OPENAI_API_KEY;
+  const hasNextAuth = !!process.env.NEXTAUTH_URL;
+  return NextResponse.json({ 
+    status: "ok",
+    openaiConfigured: hasOpenAI,
+    nextauthConfigured: hasNextAuth,
+  });
 }

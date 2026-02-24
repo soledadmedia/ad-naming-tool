@@ -233,6 +233,15 @@ export default function Home() {
         });
         
         const data = await res.json();
+        console.log(`Transcription result for ${video.name}:`, data);
+        
+        if (data.error) {
+          console.error(`Transcription error for ${video.name}:`, data.error);
+          setVideos(prev => prev.map((v, idx) =>
+            idx === i ? { ...v, processing: false, error: data.error } : v
+          ));
+          continue;
+        }
         
         setVideos(prev => prev.map((v, idx) => {
           if (idx !== i) return v;
@@ -241,14 +250,15 @@ export default function Home() {
             processing: false,
             transcript: data.transcript || "",
             isTTSSafe: data.isTTSSafe ?? true,
-            description: data.description || "Ad",
+            description: data.description || v.description,
           };
           updated.suggestedName = generateFileName(
             idx, updated.multiplier, updated.isTTSSafe, updated.description, updated.duration
           );
           return updated;
         }));
-      } catch {
+      } catch (err) {
+        console.error(`Transcription fetch error for ${video.name}:`, err);
         setVideos(prev => prev.map((v, idx) =>
           idx === i ? { ...v, processing: false, error: "Transcription failed" } : v
         ));
