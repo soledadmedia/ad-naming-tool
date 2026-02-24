@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { google } from "googleapis";
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 import { Readable } from "stream";
 
 // Increase function timeout to 60 seconds (requires Pro plan, otherwise 10s)
@@ -115,8 +115,9 @@ export async function POST(request: NextRequest) {
     console.log("[Transcribe] Sending to Whisper...");
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     
-    const file = new File([videoBuffer], fileName || "video.mp4", { 
-      type: "video/mp4" 
+    // Use OpenAI's toFile helper for Node.js compatibility
+    const file = await toFile(videoBuffer, fileName || "video.mp4", {
+      type: "video/mp4",
     });
 
     const transcription = await openai.audio.transcriptions.create({
