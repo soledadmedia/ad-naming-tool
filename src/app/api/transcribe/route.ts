@@ -4,6 +4,9 @@ import { google } from "googleapis";
 import OpenAI from "openai";
 import { Readable } from "stream";
 
+// Increase function timeout to 60 seconds (requires Pro plan, otherwise 10s)
+export const maxDuration = 60;
+
 // Payment-related phrases that make content NOT TikTok safe
 const PAYMENT_PHRASES = [
   "12.95",

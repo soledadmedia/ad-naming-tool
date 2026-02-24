@@ -437,7 +437,9 @@ export default function Home() {
                   <tr key={video.id} className={`hover:bg-gray-750 ${video.processing ? "opacity-50" : ""}`}>
                     <td className="px-4 py-3 text-sm">
                       {video.processing && <span className="animate-pulse mr-2">⏳</span>}
+                      {video.error && <span className="text-red-400 mr-2" title={video.error}>❌</span>}
                       {video.name}
+                      {video.error && <div className="text-xs text-red-400 mt-1">{video.error}</div>}
                     </td>
                     <td className="px-4 py-3 text-sm">
                       {video.isEditing ? (
