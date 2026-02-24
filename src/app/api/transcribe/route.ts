@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { google } from "googleapis";
-import { AssemblyAI } from "assemblyai";
 import { Readable } from "stream";
+import { writeFile, unlink, readFile } from "fs/promises";
+import { join } from "path";
+import { tmpdir } from "os";
+import { exec } from "child_process";
+import { promisify } from "util";
+import { randomUUID } from "crypto";
 
-// Increase function timeout (Pro plan: 60s, free: 10s)
-export const maxDuration = 60;
+const execAsync = promisify(exec);
+
+// Increase function timeout
+export const maxDuration = 300; // 5 minutes for local processing
 
 // Payment-related phrases that make content NOT TikTok safe
 const PAYMENT_PHRASES = [
@@ -58,18 +65,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized - no session" }, { status: 401 });
   }
 
+  const uuid = randomUUID();
+  const videoPath = join(tmpdir(), `video-${uuid}.mp4`);
+  const audioPath = join(tmpdir(), `audio-${uuid}.mp3`);
+  const transcriptPath = join(tmpdir(), `transcript-${uuid}.txt`);
+
   try {
     const { fileId, fileName } = await request.json();
     console.log(`[Transcribe] Starting for ${fileName} (${fileId})`);
-
-    // Check for AssemblyAI key
-    if (!process.env.ASSEMBLYAI_API_KEY) {
-      return NextResponse.json({ 
-        error: "AssemblyAI API key not configured", 
-        isTTSSafe: true, 
-        description: "Ad" 
-      });
-    }
 
     // Get access token
     const tokenRes = await fetch(`${process.env.NEXTAUTH_URL}/api/auth/session`, {
@@ -87,7 +90,7 @@ export async function POST(request: NextRequest) {
     oauth2Client.setCredentials({ access_token: accessToken });
     const drive = google.drive({ version: "v3", auth: oauth2Client });
 
-    // Download video to buffer
+    // Download video to temp file
     const response = await drive.files.get(
       { fileId, alt: "media" },
       { responseType: "stream" }
@@ -103,42 +106,57 @@ export async function POST(request: NextRequest) {
 
     const videoBuffer = Buffer.concat(chunks);
     const sizeMB = (videoBuffer.length / 1024 / 1024).toFixed(2);
-    console.log(`[Transcribe] Downloaded ${sizeMB}MB`);
+    console.log(`[Transcribe] Downloaded ${sizeMB}MB, saving to ${videoPath}`);
 
-    // AssemblyAI handles large files (up to 5GB)
-    console.log("[Transcribe] Uploading to AssemblyAI...");
-    const client = new AssemblyAI({ apiKey: process.env.ASSEMBLYAI_API_KEY });
-    
-    // Upload the file
-    const uploadUrl = await client.files.upload(videoBuffer);
-    console.log("[Transcribe] File uploaded, starting transcription...");
+    // Save video to temp file
+    await writeFile(videoPath, videoBuffer);
 
-    // Transcribe
-    const transcript = await client.transcripts.transcribe({
-      audio_url: uploadUrl,
-    });
-
-    if (transcript.status === "error") {
-      throw new Error(transcript.error || "Transcription failed");
+    // Extract audio with FFmpeg
+    console.log("[Transcribe] Extracting audio with FFmpeg...");
+    try {
+      await execAsync(`ffmpeg -i "${videoPath}" -vn -acodec mp3 -ar 16000 -ac 1 -y "${audioPath}" 2>/dev/null`);
+    } catch (e) {
+      console.error("FFmpeg error:", e);
+      throw new Error("Failed to extract audio from video");
     }
 
-    const text = transcript.text || "";
-    console.log(`[Transcribe] Got transcript: "${text.slice(0, 100)}..."`);
-    
-    const ttsSafe = isTTSSafe(text);
-    const description = extractDescription(text);
+    // Transcribe with Whisper
+    console.log("[Transcribe] Running Whisper transcription...");
+    try {
+      // Use whisper CLI with base model (faster, good enough for short clips)
+      await execAsync(`whisper "${audioPath}" --model base --output_format txt --output_dir "${tmpdir()}" --fp16 False 2>/dev/null`);
+      
+      // Read the transcript - whisper outputs to audio-{uuid}.txt
+      const whisperOutput = join(tmpdir(), `audio-${uuid}.txt`);
+      const text = await readFile(whisperOutput, "utf-8");
+      
+      console.log(`[Transcribe] Got transcript: "${text.slice(0, 100)}..."`);
+      
+      const ttsSafe = isTTSSafe(text);
+      const description = extractDescription(text);
 
-    console.log(`[Transcribe] Done! TTS Safe: ${ttsSafe}, Description: ${description}`);
-    
-    return NextResponse.json({
-      transcript: text,
-      isTTSSafe: ttsSafe,
-      description,
-    });
+      console.log(`[Transcribe] Done! TTS Safe: ${ttsSafe}, Description: ${description}`);
+
+      // Cleanup
+      await cleanup(videoPath, audioPath, whisperOutput);
+      
+      return NextResponse.json({
+        transcript: text.trim(),
+        isTTSSafe: ttsSafe,
+        description,
+      });
+    } catch (e) {
+      console.error("Whisper error:", e);
+      throw new Error("Whisper transcription failed");
+    }
 
   } catch (error) {
     console.error("Transcription error:", error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    
+    // Cleanup on error
+    await cleanup(videoPath, audioPath, transcriptPath);
+    
     return NextResponse.json(
       { error: `Transcription failed: ${errorMessage}`, isTTSSafe: true, description: "Ad" },
       { status: 500 }
@@ -146,13 +164,35 @@ export async function POST(request: NextRequest) {
   }
 }
 
+async function cleanup(...paths: string[]) {
+  for (const p of paths) {
+    try {
+      await unlink(p);
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+}
+
 // Health check endpoint
 export async function GET() {
-  const hasAssemblyAI = !!process.env.ASSEMBLYAI_API_KEY;
-  const hasNextAuth = !!process.env.NEXTAUTH_URL;
+  let whisperAvailable = false;
+  let ffmpegAvailable = false;
+  
+  try {
+    await execAsync("which whisper");
+    whisperAvailable = true;
+  } catch {}
+  
+  try {
+    await execAsync("which ffmpeg");
+    ffmpegAvailable = true;
+  } catch {}
+  
   return NextResponse.json({ 
     status: "ok",
-    assemblyaiConfigured: hasAssemblyAI,
-    nextauthConfigured: hasNextAuth,
+    whisperAvailable,
+    ffmpegAvailable,
+    nextauthConfigured: !!process.env.NEXTAUTH_URL,
   });
 }
